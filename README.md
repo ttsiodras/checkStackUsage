@@ -60,6 +60,21 @@ detects patterns like this:
 It can then accumulate the use of all subordinate calls from each function,
 and therefore compute it's total stack usage.
 
+Output looks like this:
+
+    176: foo (foo(16),func(160))
+    288: func (func(288))
+    304: bar (bar(16),func(288))
+    320: main (main(16),bar(16),func(288))
+
+...which means that function `foo` uses 176 bytes of stack; 16 because of
+itself, and 160 because it calls `func`. `main` uses 320 bytes, etc.
+
+Notice that `bar` also uses `func` - but reports a larger stack size for it
+in that call chain. Read section "Repeated functions" below, to see why;
+suffice to say, this is one of the few stack checkers that can cope with
+symbols defined more than once.
+
 # Platforms
 
 The script needs to spawn the right `objdump`. It uses
