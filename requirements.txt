@@ -1,0 +1,6 @@
+typing==3.7.4.3
+flake8==3.9.0
+pylint>=2.6.2
+mypy==0.812
+pytest==6.1.2
+coverage==5.5
