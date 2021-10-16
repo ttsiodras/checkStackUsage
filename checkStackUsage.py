@@ -350,7 +350,7 @@ def ReadSU(fullPathToSuFile: str) -> Tuple[FunctionNameToInt, SuData]:
             try:
                 functionName = data[0].split(':')[-1]
                 functionStackUsage = int(data[1])
-            except:
+            except ValueError:
                 continue
             stackUsagePerFunction[functionName] = functionStackUsage
             suData.setdefault(functionName, []).append(
@@ -365,14 +365,15 @@ def GetSizesFromSUfiles(root_path) -> Tuple[FunctionNameToInt, SuData]:
         for f in files:
             if f.endswith('.su'):
                 supf, sud = ReadSU(root + os.sep + f)
-                for k, v in supf.items():
-                    stackUsagePerFunction[k] = max(
-                        v, stackUsagePerFunction.get(k, 0))
+                for functionName, v1 in supf.items():
+                    stackUsagePerFunction[functionName] = max(
+                        v1, stackUsagePerFunction.get(functionName, 0))
 
                 # We need to augment the list of .su if there's
                 # a symbol that appears in two or more .su files.
-                for functionName, v in sud.items():
-                    suData.setdefault(functionName, []).extend(v)
+                # SuData = Dict[FunctionName, List[Tuple[Filename, int]]]
+                for functionName, v2 in sud.items():
+                    suData.setdefault(functionName, []).extend(v2)
     return stackUsagePerFunction, suData
 
 
