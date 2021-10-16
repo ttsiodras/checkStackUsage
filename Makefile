@@ -1,4 +1,4 @@
-TARGET:= checkStackUsageGCCBased.py
+TARGET:= checkStackUsage.py
 PYTHON:=python3
 VENV:=.venv
 
