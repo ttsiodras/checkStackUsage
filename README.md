@@ -1,4 +1,3 @@
-
 *(Detailed blog post [here](https://www.thanassis.space/stackusage.html) )*
 
 # Introduction
