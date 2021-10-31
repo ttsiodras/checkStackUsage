@@ -115,18 +115,22 @@ def findStackUsage(
         fns: List[Tuple[FunctionName, int]],
         suData: SuData,
         stackUsagePerFunction: FunctionNameToInt,
-        callGraph: CallGraph) -> UsageResult:
+        callGraph: CallGraph,
+        badSymbols: Set[FunctionName],
+        cache: Dict[FunctionName, UsageResult] = {}) -> UsageResult:
     """
     Calculate the total stack usage of the input function,
     taking into account who it calls.
     """
-    # Sadly, we can't apply memoization anymore. A function
-    # can appear in two .su files - we'd store and reuse
-    # the same value for both places (which is wrong).
+    # Memoization is not a simple matter: A function can appear
+    # in two .su files - we'd store and reuse the same value
+    # for both places (which is wrong).
+    # So only do this, if ALL previous symbols appear uniquely
+    # in the ELF (see static functions counter-example above)
     #
-    # #  pylint: disable=W0102
-    # if fn in cache:  # memoization
-    #     return cache[fn]
+    #  pylint: disable=W0102
+    if fn in cache and all(x[0] not in badSymbols for x in fns):  # memoization
+        return cache[fn]
 
     if fn in [x[0] for x in fns]:
         # So, what to do with recursive functions?
@@ -164,13 +168,19 @@ def findStackUsage(
             fns + [(fn, thisFunctionStackSize)],
             suData,
             stackUsagePerFunction,
-            callGraph)
+            callGraph,
+            badSymbols)
         if total > totalStackUsage:
             totalStackUsage = total
             maxStackPath = path
 
     # ...and add the maximum in the list to our own stack usage:
     res = (totalStackUsage, maxStackPath[:])
+    # Memoize this result, but only if all previous callers in
+    # the chain are symbols that appear only once in our ELF.
+    # (see counter-example with static functions above).
+    if all(x[0] not in badSymbols for x in fns):
+        cache[fn] = res
     return res
 
 
@@ -398,7 +408,12 @@ def main() -> None:
         functionNamePattern, stackUsagePattern, callPattern)
 
     supf, suData = GetSizesFromSUfiles(sys.argv[-1])
+    alreadySeen = set()  # type: Set[Filename]
+    badSymbols = set()  # type: Set[Filename]
     for k, v in supf.items():
+        if k in alreadySeen:
+            badSymbols.add(k)
+        alreadySeen.add(k)
         stackUsagePerFunction[k] = max(
             v, stackUsagePerFunction.get(k, 0))
 
@@ -410,7 +425,8 @@ def main() -> None:
             results.append(
                 (fn,
                  findStackUsage(
-                     fn, [], suData, stackUsagePerFunction, callGraph)))
+                     fn, [], suData, stackUsagePerFunction,
+                     callGraph, badSymbols)))
     for fn, data in sorted(results, key=lambda x: x[1][0]):
         # pylint: disable=C0209
         print(
