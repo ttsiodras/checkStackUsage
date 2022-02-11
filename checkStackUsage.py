@@ -117,20 +117,49 @@ def findStackUsage(
         stackUsagePerFunction: FunctionNameToInt,
         callGraph: CallGraph,
         badSymbols: Set[FunctionName],
+        # pylint: disable=dangerous-default-value
         cache: Dict[FunctionName, UsageResult] = {}) -> UsageResult:
     """
     Calculate the total stack usage of the input function,
     taking into account who it calls.
     """
-    # Memoization is not a simple matter: A function can appear
-    # in two .su files - we'd store and reuse the same value
-    # for both places (which is wrong).
-    # So only do this, if ALL previous symbols appear uniquely
-    # in the ELF (see static functions counter-example above)
+    # Memoization is not a simple matter: A function can appear in more than
+    # one .su files (see example above) - so if we use the function name as
+    # a key to memoize, we'd store and reuse the same value for both places.
+    #
+    # So we should only lookup the function in the cache, if ALL previous
+    # symbols appear uniquely in the ELF...
+    #
+    #     key = fn
+    #     if key in cache and all(x[0] not in badSymbols for x in fns):
+    #         .... # use cache[key] as result
+    #
+    # ...except that won't work reliably either.
+    # The only cache key that will work reliably, always, is this:
+
+    key = ''.join(x[0] for x in fns) + fn
+
+    # ...which basically says: "Don't just memorise cache[functionName] = ...
+    # Instead, build a name out of the entire call path so far, and add
+    # functionName at the end. For a call path of 'a' -> 'b' -> 'c' -> 'func',
+    # the key would be 'abcfunc'.
+    #
+    # This is the only proper memoization; the only time when stack use can
+    # indeed be safely re-taken from the cache.
+    #
+    # Sadly, when we do this, RTEMS binaries take a lot of time to finish
+    # processing; the call graph is small enough for Linux and FreeRTOS
+    # binaries, but with RTEMS5 binaries, we scan a huge graph of thousands
+    # of functions calling each other.
+    #
+    # Thankfully, we can program TASTE to generate a custom "checkAllStacks.py"
+    # script; that will only ask us for a specific set of entrypoints. In this
+    # way, we will only "scout" a small part of the graph - the TASTE provided
+    # interfaces' entrypoints.
     #
     #  pylint: disable=W0102
-    if fn in cache and all(x[0] not in badSymbols for x in fns):  # memoization
-        return cache[fn]
+    if key in cache and all(x[0] not in badSymbols for x in fns):
+        return cache[key]
 
     if fn in [x[0] for x in fns]:
         # So, what to do with recursive functions?
@@ -143,11 +172,18 @@ def findStackUsage(
         # We therefore return 0 for this "last step"
         # and stop the recursion here.
         totalStackUsage = sum(x[1] for x in fns)
+        if fn not in badSymbols:
+            # Stop memoization for functions called after
+            # a recursive one; force re-evaluating them.
+            badSymbols.add(fn)
+            print("[x] Recursion detected:", fn, 'is called from',
+                  fns[-1][0], 'in this chain:', fns)
         return (totalStackUsage, fns[:])
 
     if fn not in stackUsagePerFunction:
+        # Unknown function, what else to do? Count it as 0 stack usage...
         totalStackUsage = sum(x[1] for x in fns)
-        return (totalStackUsage, fns[:])  # Unknown function, what else to do?
+        return (totalStackUsage, fns[:] + [(fn, 0)])
 
     thisFunctionStackSize = lookupStackSizeOfFunction(
         fn, fns, suData, stackUsagePerFunction)
@@ -156,16 +192,16 @@ def findStackUsage(
     # If we call noone else, stack usage is just our own stack usage
     if fn not in callGraph or not calledFunctions:
         totalStackUsage = sum(x[1] for x in fns) + thisFunctionStackSize
-        res = (totalStackUsage, fns + [(fn, thisFunctionStackSize)])
+        res = (totalStackUsage, fns[:] + [(fn, thisFunctionStackSize)])
         return res
 
     # Otherwise, we check the stack usage for each function we call
     totalStackUsage = 0
     maxStackPath = []
-    for x in calledFunctions:
+    for x in sorted(calledFunctions):
         total, path = findStackUsage(
             x,
-            fns + [(fn, thisFunctionStackSize)],
+            fns[:] + [(fn, thisFunctionStackSize)],
             suData,
             stackUsagePerFunction,
             callGraph,
@@ -180,17 +216,13 @@ def findStackUsage(
     # the chain are symbols that appear only once in our ELF.
     # (see counter-example with static functions above).
     if all(x[0] not in badSymbols for x in fns):
-        cache[fn] = res
+        cache[key] = res
     return res
 
 
-def ParseCmdLineArgs() -> Tuple[str, str, Matcher, Matcher, Matcher]:
-    try:
-        idx = sys.argv.index("-cross")
-    except ValueError:
-        idx = -1
-    if idx != -1:
-        cross_prefix = sys.argv[idx + 1]
+def ParseCmdLineArgs(cross_prefix: str) -> Tuple[
+        str, str, Matcher, Matcher, Matcher]:
+    if cross_prefix:
         objdump = cross_prefix + 'objdump'
         nm = cross_prefix + 'nm'
         functionNamePattern = Matcher(r'^(\S+) <([a-zA-Z0-9\._]+?)>:')
@@ -388,10 +420,25 @@ def GetSizesFromSUfiles(root_path) -> Tuple[FunctionNameToInt, SuData]:
 
 
 def main() -> None:
+    cross_prefix = ''
+    try:
+        idx = sys.argv.index("-cross")
+    except ValueError:
+        idx = -1
+    if idx != -1:
+        cross_prefix = sys.argv[idx + 1]
+        del sys.argv[idx]
+        del sys.argv[idx]
+
+    chosenFunctionNames = []
+    if len(sys.argv) >= 4:
+        chosenFunctionNames = sys.argv[3:]
+        sys.argv = sys.argv[:3]
+
     if len(sys.argv) < 3 or not os.path.exists(sys.argv[-2]) \
             or not os.path.isdir(sys.argv[-1]):
         print(f"Usage: {sys.argv[0]} [-cross PREFIX]"
-              " ELFbinary root_path_for_su_files")
+              " ELFbinary root_path_for_su_files [functions...]")
         print("\nwhere the default prefix is:\n")
         print("\tarm-eabi-      for ARM binaries")
         print("\tsparc-rtems5-  for SPARC binaries")
@@ -400,7 +447,7 @@ def main() -> None:
         sys.exit(1)
 
     objdump, nm, functionNamePattern, callPattern, stackUsagePattern = \
-        ParseCmdLineArgs()
+        ParseCmdLineArgs(cross_prefix)
     sizeOfSymbol, offsetOfSymbol = GetSizeOfSymbols(nm, sys.argv[-2])
     callGraph, stackUsagePerFunction = GetCallGraph(
         objdump,
@@ -417,16 +464,17 @@ def main() -> None:
         stackUsagePerFunction[k] = max(
             v, stackUsagePerFunction.get(k, 0))
 
-    print("Cumulative stack usage per function:")
     # Then, navigate the graph to calculate stack needs per function
     results = []
     for fn, value in stackUsagePerFunction.items():
+        if chosenFunctionNames and fn not in chosenFunctionNames:
+            continue
         if value is not None:
             results.append(
                 (fn,
                  findStackUsage(
-                     fn, [], suData, stackUsagePerFunction,
-                     callGraph, badSymbols)))
+                     fn, [], suData, stackUsagePerFunction, callGraph,
+                     badSymbols)))
     for fn, data in sorted(results, key=lambda x: x[1][0]):
         # pylint: disable=C0209
         print(
