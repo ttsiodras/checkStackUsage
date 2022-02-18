@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env pypy3
 """
 Utility to detect recursive calls and calculate total stack usage per function
 (via following the call graph).
@@ -116,51 +116,11 @@ def findStackUsage(
         suData: SuData,
         stackUsagePerFunction: FunctionNameToInt,
         callGraph: CallGraph,
-        badSymbols: Set[FunctionName],
-        # pylint: disable=dangerous-default-value
-        cache: Dict[FunctionName, UsageResult] = {}) -> UsageResult:
+        badSymbols: Set[FunctionName]) -> UsageResult:
     """
     Calculate the total stack usage of the input function,
     taking into account who it calls.
     """
-    # Memoization is not a simple matter: A function can appear in more than
-    # one .su files (see example above) - so if we use the function name as
-    # a key to memoize, we'd store and reuse the same value for both places.
-    #
-    # So we should only lookup the function in the cache, if ALL previous
-    # symbols appear uniquely in the ELF...
-    #
-    #     key = fn
-    #     if key in cache and all(x[0] not in badSymbols for x in fns):
-    #         .... # use cache[key] as result
-    #
-    # ...except that won't work reliably either.
-    # The only cache key that will work reliably, always, is this:
-
-    key = ''.join(x[0] for x in fns) + fn
-
-    # ...which basically says: "Don't just memorise cache[functionName] = ...
-    # Instead, build a name out of the entire call path so far, and add
-    # functionName at the end. For a call path of 'a' -> 'b' -> 'c' -> 'func',
-    # the key would be 'abcfunc'.
-    #
-    # This is the only proper memoization; the only time when stack use can
-    # indeed be safely re-taken from the cache.
-    #
-    # Sadly, when we do this, RTEMS binaries take a lot of time to finish
-    # processing; the call graph is small enough for Linux and FreeRTOS
-    # binaries, but with RTEMS5 binaries, we scan a huge graph of thousands
-    # of functions calling each other.
-    #
-    # Thankfully, we can program TASTE to generate a custom "checkAllStacks.py"
-    # script; that will only ask us for a specific set of entrypoints. In this
-    # way, we will only "scout" a small part of the graph - the TASTE provided
-    # interfaces' entrypoints.
-    #
-    #  pylint: disable=W0102
-    if key in cache and all(x[0] not in badSymbols for x in fns):
-        return cache[key]
-
     if fn in [x[0] for x in fns]:
         # So, what to do with recursive functions?
         # We just reached this point with fns looking like this:
@@ -173,8 +133,7 @@ def findStackUsage(
         # and stop the recursion here.
         totalStackUsage = sum(x[1] for x in fns)
         if fn not in badSymbols:
-            # Stop memoization for functions called after
-            # a recursive one; force re-evaluating them.
+            # Report recursive functions.
             badSymbols.add(fn)
             print("[x] Recursion detected:", fn, 'is called from',
                   fns[-1][0], 'in this chain:', fns)
@@ -209,15 +168,7 @@ def findStackUsage(
         if total > totalStackUsage:
             totalStackUsage = total
             maxStackPath = path
-
-    # ...and add the maximum in the list to our own stack usage:
-    res = (totalStackUsage, maxStackPath[:])
-    # Memoize this result, but only if all previous callers in
-    # the chain are symbols that appear only once in our ELF.
-    # (see counter-example with static functions above).
-    if all(x[0] not in badSymbols for x in fns):
-        cache[key] = res
-    return res
+    return (totalStackUsage, maxStackPath[:])
 
 
 def ParseCmdLineArgs(cross_prefix: str) -> Tuple[
