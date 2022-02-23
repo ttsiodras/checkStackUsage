@@ -78,35 +78,41 @@ def lookupStackSizeOfFunction(
     when computing stack usage.
 
     So what we do is this: we have suData - a dictionary that stores
-    per each function name, WHERE we found it (at which .su filename)
-    and what size it had there. We scan that from the beginning of our fns
-    list all the way to the end - storing the *last active suFilename*.
+    per each function name, WHERE we found it (at which .su filenames)
+    and what size it had in each of them. We scan that list, looking for
+    the last filename in our call chain so far (i.e. the last of the 'fns').
 
-    And we then look up the stack use of our function prioritizing that
-    suFilename.
+    And we then report the associated stack use.
     """
+    # If the call chain so far is empty, or our function is not in the
+    # .su files (e.g. it comes from a library we linked with), then we
+    # use the 'su-agnostic' information we got during our symbol scan.
     if not fns or fn not in suData:
         return stackUsagePerFunction[fn]
 
+    # Otherwise, we first get the last function in the call chain...
     suFilename = None
-    for elem in fns:
-        functionName = elem[0]
-        if functionName not in suData:
-            continue
-        suList = suData[functionName]
-        if len(suList) != 1:
-            continue
-        suFilename = suList[0][0]
+    lastCallData = fns[-1]
+    functionName = lastCallData[0]
 
+    # ...and use the .su files information to get the file it lives in
+    # Remember, SuData is a Dict[FunctionName, List[Tuple[Filename, int]]]
+    suList = suData.get(functionName, [])
+    if suList:
+        suFilename = suList[0][0]  # Get the filename part of the first tuple
     if not suFilename:
         return stackUsagePerFunction[fn]
 
-    # SuData = Dict[FunctionName, List[Tuple[Filename, int]]]
-    for elem in suData[fn]:
-        if elem[0] != suFilename:
-            continue
-        return elem[1]
+    # Now that we have the filename of our last caller in the chain
+    # that calls us, scan our OWN existence in the .su data, to find
+    # the one that matches - thus prioritizing local calls!
+    for elem in suData.get(fn, []):
+        xFilename, xStackUsage = elem
+        if xFilename == suFilename:
+            return xStackUsage
 
+    # ...otherwise (no match in the .su data) we use the 'su-agnostic'
+    # information we got during our symbol scan.
     return stackUsagePerFunction[fn]
 
 
