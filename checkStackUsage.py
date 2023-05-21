@@ -14,10 +14,9 @@ import re
 import sys
 import operator
 import argparse
+import logging
 
 from typing import Dict, Set, Optional, List, Tuple
-
-# TODO use logging (only enabled if user flag is given)
 
 FunctionName = str
 FunctionNameToInt = Dict[FunctionName, int]
@@ -192,7 +191,9 @@ def ParseCmdLineArgs(cross_prefix: str) -> Tuple[
         stackUsagePattern = Matcher(
             r'^.*save.*%sp, (-[0-9]{1,}), %sp')
     else:
-        binarySignature = os.popen(f"file \"{args.ELFbinary}\"").readlines()[0]
+
+        binarySignature = os.popen(
+            f"file \"{args.ELFbinary}\"").readlines()[0]  # type: ignore[attr-defined] # noqa: E501
 
         x86 = Matcher(r'ELF 32-bit LSB.*80.86')
         x64 = Matcher(r'ELF 64-bit LSB.*x86-64')
@@ -233,12 +234,15 @@ def ParseCmdLineArgs(cross_prefix: str) -> Tuple[
 
 def GetSizeOfSymbols(nm: str, elf_binary: str) -> Tuple[
         FunctionNameToInt, FunctionNameToInt]:
+    logging.info("Getting size of symbols for file %s...", elf_binary)
     # Store .text symbol offsets and sizes (use nm)
     offsetOfSymbol = {}  # type: FunctionNameToInt
     for line in os.popen(
             nm + " \"" + elf_binary + "\" | grep ' [Tt] '").readlines():
         offsetData, unused, symbolData = line.split()
         offsetOfSymbol[symbolData] = int(offsetData, 16)
+        logging.info("Found symbol " + symbolData + " at offset 0x" +
+                     offsetData)
     sizeOfSymbol = {}
     lastOffset = 0
     lastSymbol = ""
@@ -247,6 +251,8 @@ def GetSizeOfSymbols(nm: str, elf_binary: str) -> Tuple[
     for symbolStr, offsetInt in sortedSymbols:
         if lastSymbol != "":
             sizeOfSymbol[lastSymbol] = offsetInt - lastOffset
+            logging.info("Size of %s is %s",
+                         lastSymbol, str(sizeOfSymbol[lastSymbol]))
         lastSymbol = symbolStr
         lastOffset = offsetInt
     sizeOfSymbol[lastSymbol] = 2**31  # allow last .text symbol to roam free
@@ -266,9 +272,13 @@ def GetCallGraph(
     insideFunctionBody = False
 
     offsetPattern = Matcher(r'^([0-9A-Fa-f]+):')
-    for line in os.popen(objdump + " -d \"" + args.ELFbinary + "\"").readlines():
+
+    logging.info("Disassembling file %s..", args.ELFbinary)  # type: ignore[attr-defined] # noqa: E501
+
+    for line in os.popen(objdump + " -d \"" + args.ELFbinary +  # type: ignore[attr-defined] # noqa: E501
+                         "\"").readlines():
         # Have we matched a function name yet?
-        if functionName != "":
+        if functionName != "" and insideFunctionBody:
             # Yes, update "insideFunctionBody" boolean by checking
             # the current offset against the length of this symbol,
             # stored in sizeOfSymbol[functionName]
@@ -277,17 +287,22 @@ def GetCallGraph(
                 offset = int(offset.group(1), 16)
                 if functionName in offsetOfSymbol:
                     startOffset = offsetOfSymbol[functionName]
-                    insideFunctionBody = \
-                        insideFunctionBody and \
-                        (offset - startOffset) < sizeOfSymbol[functionName]
-                # TODO else --> function not found in syms, log error?
+                    insideFunctionBody = (offset - startOffset) < \
+                        sizeOfSymbol[functionName]
+                else:
+                    logging.warning("Function %s not found in symbols!",
+                                    functionName)
 
         # Check to see if we see a new function:
         # 08048be8 <_functionName>:
         fn = functionNamePattern.match(line)
         if fn:
-            offset = int(fn.group(1), 16)
+            # offset = int(fn.group(1), 16)
             functionName = fn.group(2)
+
+            logging.info("Found function " + functionName + " with offset 0x"
+                         + fn.group(1))
+
             callGraph.setdefault(functionName, set())
             # make sure this is the function we found with nm
             # UPDATE: no, can't do - if a symbol is of local file scope
@@ -314,13 +329,19 @@ def GetCallGraph(
                 calledFunction = call.group(1)
                 calledFunctions = callGraph[functionName]
                 if calledFunctions is not None:
+                    logging.info("Found call to " + calledFunction +
+                                 " in function " + functionName)
                     calledFunctions.add(calledFunction)
+                else:
+                    logging.error("Call pattern was matched, but function "
+                                  "name was empty!")
 
             # Check to see if we have a stack reduction opcode
             #  8048bec:       83 ec 04                sub    $0x46,%esp
             if functionName != "" and not foundFirstCall:
                 stackMatch = stackUsagePattern.match(line)
                 if stackMatch:
+                    logging.info("Stack reduction: %s", line.strip())
                     value = stackMatch.group(1)
                     if value.startswith("0x"):
                         # sub    $0x46,%esp
@@ -335,8 +356,7 @@ def GetCallGraph(
                     else:
                         # save  %sp, -104, %sp
                         value = -int(value)
-                    assert(
-                        stackUsagePerFunction[functionName] is not None)
+                    assert stackUsagePerFunction[functionName] is not None
                     stackUsagePerFunction[functionName] += value
 
     # for fn,v in stackUsagePerFunction.items():
@@ -348,6 +368,8 @@ def GetCallGraph(
 def ReadSU(fullPathToSuFile: str) -> Tuple[FunctionNameToInt, SuData]:
     stackUsagePerFunction = {}  # type: FunctionNameToInt
     suData = {}                 # type: SuData
+
+    logging.info("Reading file %s...", fullPathToSuFile)
     # pylint: disable=R1732
     for line in open(fullPathToSuFile, encoding='utf-8'):
         data = line.strip().split()
@@ -386,19 +408,37 @@ def main() -> None:
     global args
 
     # parse arguments
-    parser = argparse.ArgumentParser(description="Compute the stack used by each of your functions (via GCC's "
-                                                 "'-fstack-usage' and call-graph tracing) ")
+    parser = argparse.ArgumentParser(
+        description="Compute the stack used by each of your functions "
+                    "(via GCC's '-fstack-usage' and call-graph tracing)")
     parser.add_argument("ELFbinary", help="ELF binary")
-    parser.add_argument("root_path_for_su_files", help="Path where .su files are located")
-    parser.add_argument("--cross", "-c", help="Cross compiler prefix\nwhere the default prefix is:\n"
-                                              "\tarm-eabi-      for ARM binaries"
-                                              "\tsparc-rtems5-  for SPARC binaries"
-                                              "\t(no prefix)    for x86/amd64 binaries.\n"
-                                              "Note that if you use '--cross', SPARC opcodes are assumed.\n",
+    parser.add_argument("root_path_for_su_files",
+                        help="Path where .su files are located")
+    parser.add_argument("--cross", "-c",
+                        help="Cross compiler prefix where the default "
+                             "prefix is: "
+                             "arm-eabi-      for ARM binaries; "
+                             "sparc-rtems5-  for SPARC binaries; "
+                             "(no prefix)    for x86/amd64 binaries. "
+                             "Note that if you use '--cross', SPARC opcodes "
+                             "are assumed.",
                         type=str, required=False, default='')
-    parser.add_argument("--functions", "-f", help="Functions to analyse. All functions are analysed if this option is "
-                                                  "not specified.", nargs='+', type=str, required=False)
+    parser.add_argument("--functions", "-f",
+                        help="Functions to analyse. All functions are "
+                             "analysed if this option is not specified.",
+                        nargs='+', type=str, required=False)
+    parser.add_argument("--logging", "-l", help="Print logging info",
+                        action="store_const", const=True, required=False,
+                        default=False)
     args = parser.parse_args()
+
+    if args.logging:
+        logging_level = logging.DEBUG
+    else:
+        logging_level = logging.ERROR
+
+    logging.basicConfig(level=logging_level,
+                        format='%(levelname)s : %(funcName)s : %(message)s')
 
     objdump, nm, functionNamePattern, callPattern, stackUsagePattern = \
         ParseCmdLineArgs(args.cross)
@@ -418,6 +458,9 @@ def main() -> None:
         stackUsagePerFunction[k] = max(
             v, stackUsagePerFunction.get(k, 0))
 
+    if any(badSymbols):
+        logging.warning("Some symbols are duplicated!")
+
     # Then, navigate the graph to calculate stack needs per function
     results = []
     for fn, value in stackUsagePerFunction.items():
@@ -429,6 +472,10 @@ def main() -> None:
                  findStackUsage(
                      fn, [], suData, stackUsagePerFunction, callGraph,
                      badSymbols)))
+
+    # flush stdout (so that logging data is printed before the output)
+    sys.stdout.flush()
+
     for fn, data in sorted(results, key=lambda x: x[1][0]):
         # pylint: disable=C0209
         print(
