@@ -271,7 +271,7 @@ def GetCallGraph(
     callGraph = {}              # type: CallGraph
     insideFunctionBody = False
 
-    offsetPattern = Matcher(r'^([0-9A-Fa-f]+):')
+    offsetPattern = Matcher(r'^\s*([0-9A-Fa-f]+):')
 
     logging.info("Disassembling file %s..", args.ELFbinary)  # type: ignore[attr-defined] # noqa: E501
 
