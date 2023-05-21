@@ -16,6 +16,8 @@ import operator
 
 from typing import Dict, Set, Optional, List, Tuple
 
+# TODO use logging (only enabled if user flag is given)
+
 FunctionName = str
 FunctionNameToInt = Dict[FunctionName, int]
 
@@ -260,7 +262,7 @@ def GetCallGraph(
     callGraph = {}              # type: CallGraph
     insideFunctionBody = False
 
-    offsetPattern = Matcher(r'^([0-9A-Za-z]+):')
+    offsetPattern = Matcher(r'^([0-9A-Fa-f]+):')
     for line in os.popen(objdump + " -d \"" + sys.argv[-2] + "\"").readlines():
         # Have we matched a function name yet?
         if functionName != "":
@@ -275,6 +277,7 @@ def GetCallGraph(
                     insideFunctionBody = \
                         insideFunctionBody and \
                         (offset - startOffset) < sizeOfSymbol[functionName]
+                # TODO else --> function not found in syms, log error?
 
         # Check to see if we see a new function:
         # 08048be8 <_functionName>:
