@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import operator
+import argparse
 
 from typing import Dict, Set, Optional, List, Tuple
 
@@ -27,6 +28,8 @@ CallGraph = Dict[FunctionName, Optional[Set[FunctionName]]]
 # .su files data
 Filename = str
 SuData = Dict[FunctionName, List[Tuple[Filename, int]]]
+
+args = None
 
 
 # findStackUsage will return a tuple:
@@ -189,7 +192,7 @@ def ParseCmdLineArgs(cross_prefix: str) -> Tuple[
         stackUsagePattern = Matcher(
             r'^.*save.*%sp, (-[0-9]{1,}), %sp')
     else:
-        binarySignature = os.popen(f"file \"{sys.argv[-2]}\"").readlines()[0]
+        binarySignature = os.popen(f"file \"{args.ELFbinary}\"").readlines()[0]
 
         x86 = Matcher(r'ELF 32-bit LSB.*80.86')
         x64 = Matcher(r'ELF 64-bit LSB.*x86-64')
@@ -263,7 +266,7 @@ def GetCallGraph(
     insideFunctionBody = False
 
     offsetPattern = Matcher(r'^([0-9A-Fa-f]+):')
-    for line in os.popen(objdump + " -d \"" + sys.argv[-2] + "\"").readlines():
+    for line in os.popen(objdump + " -d \"" + args.ELFbinary + "\"").readlines():
         # Have we matched a function name yet?
         if functionName != "":
             # Yes, update "insideFunctionBody" boolean by checking
@@ -380,41 +383,32 @@ def GetSizesFromSUfiles(root_path) -> Tuple[FunctionNameToInt, SuData]:
 
 
 def main() -> None:
-    cross_prefix = ''
-    try:
-        idx = sys.argv.index("-cross")
-    except ValueError:
-        idx = -1
-    if idx != -1:
-        cross_prefix = sys.argv[idx + 1]
-        del sys.argv[idx]
-        del sys.argv[idx]
+    global args
 
-    chosenFunctionNames = []
-    if len(sys.argv) >= 4:
-        chosenFunctionNames = sys.argv[3:]
-        sys.argv = sys.argv[:3]
-
-    if len(sys.argv) < 3 or not os.path.exists(sys.argv[-2]) \
-            or not os.path.isdir(sys.argv[-1]):
-        print(f"Usage: {sys.argv[0]} [-cross PREFIX]"
-              " ELFbinary root_path_for_su_files [functions...]")
-        print("\nwhere the default prefix is:\n")
-        print("\tarm-eabi-      for ARM binaries")
-        print("\tsparc-rtems5-  for SPARC binaries")
-        print("\t(no prefix)    for x86/amd64 binaries")
-        print("\nNote that if you use '-cross', SPARC opcodes are assumed.\n")
-        sys.exit(1)
+    # parse arguments
+    parser = argparse.ArgumentParser(description="Compute the stack used by each of your functions (via GCC's "
+                                                 "'-fstack-usage' and call-graph tracing) ")
+    parser.add_argument("ELFbinary", help="ELF binary")
+    parser.add_argument("root_path_for_su_files", help="Path where .su files are located")
+    parser.add_argument("--cross", "-c", help="Cross compiler prefix\nwhere the default prefix is:\n"
+                                              "\tarm-eabi-      for ARM binaries"
+                                              "\tsparc-rtems5-  for SPARC binaries"
+                                              "\t(no prefix)    for x86/amd64 binaries.\n"
+                                              "Note that if you use '--cross', SPARC opcodes are assumed.\n",
+                        type=str, required=False, default='')
+    parser.add_argument("--functions", "-f", help="Functions to analyse. All functions are analysed if this option is "
+                                                  "not specified.", nargs='+', type=str, required=False)
+    args = parser.parse_args()
 
     objdump, nm, functionNamePattern, callPattern, stackUsagePattern = \
-        ParseCmdLineArgs(cross_prefix)
-    sizeOfSymbol, offsetOfSymbol = GetSizeOfSymbols(nm, sys.argv[-2])
+        ParseCmdLineArgs(args.cross)
+    sizeOfSymbol, offsetOfSymbol = GetSizeOfSymbols(nm, args.ELFbinary)
     callGraph, stackUsagePerFunction = GetCallGraph(
         objdump,
         offsetOfSymbol, sizeOfSymbol,
         functionNamePattern, stackUsagePattern, callPattern)
 
-    supf, suData = GetSizesFromSUfiles(sys.argv[-1])
+    supf, suData = GetSizesFromSUfiles(args.root_path_for_su_files)
     alreadySeen = set()  # type: Set[Filename]
     badSymbols = set()  # type: Set[Filename]
     for k, v in supf.items():
@@ -427,7 +421,7 @@ def main() -> None:
     # Then, navigate the graph to calculate stack needs per function
     results = []
     for fn, value in stackUsagePerFunction.items():
-        if chosenFunctionNames and fn not in chosenFunctionNames:
+        if args.functions and fn not in args.functions:
             continue
         if value is not None:
             results.append(
