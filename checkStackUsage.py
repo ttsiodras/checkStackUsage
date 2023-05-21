@@ -156,7 +156,7 @@ def findStackUsage(
         fn, fns, suData, stackUsagePerFunction)
     calledFunctions = callGraph.get(fn, set())
 
-    # If we call noone else, stack usage is just our own stack usage
+    # If we call no one else, stack usage is just our own stack usage
     if fn not in callGraph or not calledFunctions:
         totalStackUsage = sum(x[1] for x in fns) + thisFunctionStackSize
         res = (totalStackUsage, fns[:] + [(fn, thisFunctionStackSize)])
